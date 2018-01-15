@@ -1,0 +1,54 @@
+#vim: set ft=ansible:
+---
+- name: Step 005 - Post Software deployment
+  hosts: localhost
+  connection: local
+  become: false
+  vars_files:
+    - "./env_vars.yml"
+    - "./env_secret_vars.yml"
+  tags:
+    - step005
+  tasks:
+    - name: Overwrite ansible hosts file with lab hosts file
+      template:
+        src: "{{ ANSIBLE_REPO_PATH }}/configs/{{ env_type }}/files/labs_hosts_template.j2"
+        dest: "{{ ANSIBLE_REPO_PATH }}/workdir/labs_hosts-{{ env_type }}-{{ guid }}"
+
+- name: Step lab post software deployment
+  hosts: bastions
+  gather_facts: False
+  become: yes
+  tags:
+    - opentlc_bastion_tasks
+  vars_files:
+    - "{{ ANSIBLE_REPO_PATH }}/configs/{{ env_type }}/env_vars.yml"
+  tasks:
+    - name: Copy over ansible hosts file
+      copy:
+        backup: yes
+        src: "{{ ANSIBLE_REPO_PATH }}/workdir/labs_hosts-{{ env_type }}-{{ guid }}"
+        dest: /etc/ansible/hosts
+      tags:
+        - overwrite_hosts_with_lab_hosts
+
+    # sssd bug, fixed by restart
+    - name: restart sssd
+      service:
+        name: sssd
+        state: restarted
+      when: install_ipa_client
+
+- name: PostSoftware flight-check
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars_files:
+    - "{{ ANSIBLE_REPO_PATH }}/configs/{{ env_type }}/env_vars.yml"
+    - "{{ ANSIBLE_REPO_PATH }}/configs/{{ env_type }}/env_secret_vars.yml"
+  tags:
+    - post_flight_check
+  tasks:
+    - debug:
+        msg: "Post-Software checks completed successfully"

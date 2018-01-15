@@ -1,0 +1,125 @@
+# vim: set ft=ansible:
+---
+- name: Step 00x local host preparation for OpenShift deployment
+  hosts: localhost
+  connection: local
+  become: False
+  gather_facts: False
+  vars_files:
+    - "../configs/{{ env_type }}/env_vars.yml"
+    - "../configs/{{ env_type }}/env_secret_vars.yml"
+  tags:
+    - generate_ansible_hosts_file
+  tasks:
+    - name: generate ansible hosts file
+      template:
+        src: "../configs/{{ env_type }}/files/hosts_template.j2"
+        dest: "../workdir/hosts-{{ env_type }}-{{ guid }}"
+
+- name: Step 00xxxxx bastion preparation for OpenShift deployment
+  hosts: "{{ ('tag_' ~ env_type ~ '_' ~ guid ~ '_bastion') | replace('-', '_') }}"
+  become: true
+  gather_facts: False
+  vars_files:
+    - "../configs/{{ env_type }}/env_vars.yml"
+    - "../configs/{{ env_type }}/env_secret_vars.yml"
+  tags:
+    - openshift_host_templates
+    - openshift_install_idm_cert
+  tasks:
+    - name: Ensure directory /etc/ansible exists
+      file:
+        path: /etc/ansible
+        state: directory
+
+    - name: Copy over ansible hosts file
+      copy:
+        src: "../workdir/hosts-{{ env_type }}-{{ guid }}"
+        dest: /etc/ansible/hosts
+
+    - debug:
+        var: install_idm
+
+    - name: get idm certificate
+      get_url:
+        url: "{{idm_ca_url}}"
+        dest: /root/ca.crt
+        mode: 0440
+      when: 'install_idm is defined and install_idm == "ldap"'
+    - name: Copy over htpasswd file
+      copy:
+        src: "../configs/{{env_type}}/files/htpasswd.openshift"
+        dest: /root/htpasswd.openshift
+      when: 'install_idm is defined and install_idm == "htpasswd"'
+
+- name: Configuring openshift-provisioner
+  hosts: "{{ ('tag_' ~ env_type ~ '_' ~ guid ~ '_bastion') | replace('-', '_') }}"
+  gather_facts: False
+  become: yes
+  vars_files:
+    - "../configs/{{ env_type }}/env_vars.yml"
+  roles:
+    - "../roles/openshift-provisioner"
+  tags:
+    - openshift_provisioner_tasks
+
+#########################Configuring openshift-nodes
+
+- name: Configuring openshift-nodes
+  gather_facts: False
+  become: yes
+
+  hosts:
+    - "{{ ('tag_' ~ env_type ~ '_' ~ guid ~ '_infranode') | replace('-', '_') }}"
+    - "{{ ('tag_' ~ env_type ~ '_' ~ guid ~ '_node') | replace('-', '_') }}"
+    - "{{ ('tag_' ~ env_type ~ '_' ~ guid ~ '_master') | replace('-', '_') }}"
+  vars_files:
+    - "../configs/{{ env_type }}/env_vars.yml"
+  roles:
+    - "../roles/openshift-node"
+  tags:
+    - openshift_node_tasks
+
+#########################Configuring nfs hosts
+
+- name: Configuring Nfs Host
+  gather_facts: False
+  become: yes
+  hosts: "{{ ('tag_' ~ env_type ~ '_' ~ guid ~ '_support') | replace('-', '_') }}"
+  vars_files:
+    - "../configs/{{ env_type }}/env_vars.yml"
+  roles:
+    -  { role: "../roles/nfs", when: 'install_nfs' }
+  tags:
+    - nfs_tasks
+
+######################### Run OpenShift Installer
+
+- name: Run OpenShift Installer
+  gather_facts: False
+  become: yes
+  hosts: "{{ ('tag_' ~ env_type ~ '_' ~ guid ~ '_bastion') | replace('-', '_') }}"
+  vars_files:
+    - "../configs/{{ env_type }}/env_vars.yml"
+  tags:
+    - installing_openshift
+  tasks:
+    - name: Add log path to Ansible configuration
+      lineinfile:
+        regexp: "^#log_path"
+        dest: "/etc/ansible/ansible.cfg"
+        line: "log_path = /root/ansible.log"
+        state: present
+      tags:
+        - ansible_log_enable
+
+    - name: run ansible-playbook -i /etc/ansible/hosts /usr/share/ansible/openshift-ansible/playbooks/byo/config.yml
+      shell: "ansible-playbook -i /etc/ansible/hosts /usr/share/ansible/openshift-ansible/playbooks/byo/config.yml"
+      register: openshift_install_log
+      tags:
+        - openshift_installer
+
+    - name: get openshift credentials file
+      shell: ansible masters[0] -b -m fetch -a "src=/root/.kube/config dest=/root/.kube/config flat=yes"
+      tags:
+        - get_openshift_credentials
